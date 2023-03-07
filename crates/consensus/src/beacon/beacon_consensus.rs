@@ -78,7 +78,7 @@ mod test {
     #[test]
     fn test_has_block_reward_before_paris() {
         let chain_spec = ChainSpecBuilder::mainnet().build();
-        let (consensus, _) = BeaconConsensus::new(chain_spec);
+        let consensus = BeaconConsensus::new(chain_spec);
         assert!(consensus.has_block_reward(U256::ZERO, U256::ZERO));
     }
 }
