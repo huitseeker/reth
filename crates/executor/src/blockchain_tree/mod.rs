@@ -87,8 +87,8 @@ struct Externals<DB: Database, C: Consensus, EF: ExecutorFactory> {
 }
 
 impl<DB: Database, C: Consensus, EF: ExecutorFactory> Externals<DB, C, EF> {
-    /// Return sharable database helper structure.
-    fn sharable_db(&self) -> ShareableDatabase<&DB> {
+    /// Return shareable database helper structure.
+    fn shareable_db(&self) -> ShareableDatabase<&DB> {
         ShareableDatabase::new(&self.db, self.chain_spec.clone())
     }
 }
@@ -175,7 +175,7 @@ impl<DB: Database, C: Consensus, EF: ExecutorFactory> BlockchainTree<DB, C, EF> 
         let (_, canonical_tip_hash) =
             canonical_block_hashes.last_key_value().map(|(i, j)| (*i, *j)).unwrap_or_default();
 
-        let db = self.externals.sharable_db();
+        let db = self.externals.shareable_db();
         let provider = if canonical_fork.hash == canonical_tip_hash {
             Box::new(db.latest()?) as Box<dyn StateProvider>
         } else {
@@ -220,7 +220,7 @@ impl<DB: Database, C: Consensus, EF: ExecutorFactory> BlockchainTree<DB, C, EF> 
             canonical_block_hashes.last_key_value().map(|(i, j)| (*i, *j)).unwrap_or_default();
 
         // create state provider
-        let db = self.externals.sharable_db();
+        let db = self.externals.shareable_db();
         let parent_header = db
             .header(&block.parent_hash)?
             .ok_or(ExecError::CanonicalChain { block_hash: block.parent_hash })?;
@@ -554,10 +554,8 @@ impl<DB: Database, C: Consensus, EF: ExecutorFactory> BlockchainTree<DB, C, EF> 
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
-
     use super::*;
-    use parking_lot::Mutex;
+    use crate::test_utils::TestExecutorFactory;
     use reth_db::{
         mdbx::{test_utils::create_test_rw_db, Env, WriteMap},
         transaction::DbTxMut,
@@ -566,60 +564,10 @@ mod tests {
     use reth_primitives::{hex_literal::hex, proofs::EMPTY_ROOT, ChainSpecBuilder, H256, MAINNET};
     use reth_provider::{
         execution_result::ExecutionResult, insert_block, test_utils::blocks::BlockChainTestData,
-        BlockExecutor,
     };
+    use std::collections::HashSet;
 
-    struct TestFactory {
-        exec_result: Arc<Mutex<Vec<ExecutionResult>>>,
-        chain_spec: Arc<ChainSpec>,
-    }
-
-    impl TestFactory {
-        fn new(chain_spec: Arc<ChainSpec>) -> Self {
-            Self { exec_result: Arc::new(Mutex::new(Vec::new())), chain_spec }
-        }
-
-        fn extend(&self, exec_res: Vec<ExecutionResult>) {
-            self.exec_result.lock().extend(exec_res.into_iter());
-        }
-    }
-
-    struct TestExecutor(Option<ExecutionResult>);
-
-    impl<SP: StateProvider> BlockExecutor<SP> for TestExecutor {
-        fn execute(
-            &mut self,
-            _block: &reth_primitives::Block,
-            _total_difficulty: reth_primitives::U256,
-            _senders: Option<Vec<reth_primitives::Address>>,
-        ) -> Result<ExecutionResult, ExecError> {
-            self.0.clone().ok_or(ExecError::VerificationFailed)
-        }
-
-        fn execute_and_verify_receipt(
-            &mut self,
-            _block: &reth_primitives::Block,
-            _total_difficulty: reth_primitives::U256,
-            _senders: Option<Vec<reth_primitives::Address>>,
-        ) -> Result<ExecutionResult, ExecError> {
-            self.0.clone().ok_or(ExecError::VerificationFailed)
-        }
-    }
-
-    impl ExecutorFactory for TestFactory {
-        type Executor<T: StateProvider> = TestExecutor;
-
-        fn with_sp<SP: StateProvider>(&self, _sp: SP) -> Self::Executor<SP> {
-            let exec_res = self.exec_result.lock().pop();
-            TestExecutor(exec_res)
-        }
-
-        fn chain_spec(&self) -> &ChainSpec {
-            self.chain_spec.as_ref()
-        }
-    }
-
-    type TestExternals = (Arc<Env<WriteMap>>, TestConsensus, TestFactory, Arc<ChainSpec>);
+    type TestExternals = (Arc<Env<WriteMap>>, TestConsensus, TestExecutorFactory, Arc<ChainSpec>);
 
     fn externals(exec_res: Vec<ExecutionResult>) -> TestExternals {
         let db = create_test_rw_db();
@@ -631,7 +579,7 @@ mod tests {
                 .shanghai_activated()
                 .build(),
         );
-        let executor_factory = TestFactory::new(chain_spec.clone());
+        let executor_factory = TestExecutorFactory::new(chain_spec.clone());
         executor_factory.extend(exec_res);
 
         (db, consensus, executor_factory, chain_spec)

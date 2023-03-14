@@ -33,9 +33,10 @@ tracing = "0.1.37"
 tokio = { version = "1.21.2", features = ["sync"] }
 
 # mics
-aquamarine = "0.2.1" #docs
-
+aquamarine = "0.2.1" # docs
 triehash = "0.8"
+parking_lot = { version = "0.12", optional = true }
+
 # See to replace hashers to simplify libraries
 plain_hasher = "0.2"
 hash-db = "0.15"
@@ -51,3 +52,6 @@ reth-interfaces = { path = "../interfaces", features = ["test-utils"] }
 reth-primitives = { path = "../primitives", features = ["test-utils"] }
 reth-provider = { path = "../storage/provider", features = ["test-utils"]  }
 parking_lot = "0.12"
+
+[features]
+test-utils = ["parking_lot"]
