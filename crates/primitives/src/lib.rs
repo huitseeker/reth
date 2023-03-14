@@ -14,6 +14,7 @@ mod bits;
 mod block;
 pub mod bloom;
 mod chain;
+mod checkpoints;
 pub mod constants;
 pub mod contract;
 mod error;
@@ -34,16 +35,18 @@ mod withdrawal;
 
 /// Helper function for calculating Merkle proofs and hashes
 pub mod proofs;
-pub use proofs::ProofCheckpoint;
 
 pub use account::{Account, Bytecode};
 pub use bits::H512;
-pub use block::{Block, BlockHashOrNumber, BlockId, BlockNumberOrTag, SealedBlock};
+pub use block::{
+    Block, BlockHashOrNumber, BlockId, BlockNumberOrTag, SealedBlock, SealedBlockWithSenders,
+};
 pub use bloom::Bloom;
 pub use chain::{
     AllGenesisFormats, Chain, ChainInfo, ChainSpec, ChainSpecBuilder, ForkCondition, GOERLI,
     MAINNET, SEPOLIA,
 };
+pub use checkpoints::{AccountHashingCheckpoint, ProofCheckpoint, StorageHashingCheckpoint};
 pub use constants::{
     EMPTY_OMMER_ROOT, GOERLI_GENESIS, KECCAK_EMPTY, MAINNET_GENESIS, SEPOLIA_GENESIS,
 };
@@ -124,3 +127,6 @@ pub fn keccak256(data: impl AsRef<[u8]>) -> H256 {
     hasher.finalize(&mut buf);
     buf.into()
 }
+
+#[cfg(any(test, feature = "arbitrary"))]
+pub use arbitrary;

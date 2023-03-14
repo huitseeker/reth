@@ -90,7 +90,7 @@ pub struct Command {
         default_value = "mainnet",
         value_parser = genesis_value_parser
     )]
-    chain: ChainSpec,
+    chain: Arc<ChainSpec>,
 
     /// Enable Prometheus metrics.
     ///
@@ -435,7 +435,7 @@ impl Command {
         }
 
         let (tip_tx, tip_rx) = watch::channel(H256::zero());
-        let factory = reth_executor::Factory::new(Arc::new(self.chain.clone()));
+        let factory = reth_executor::Factory::new(self.chain.clone());
         let pipeline = builder
             .with_tip_sender(tip_tx)
             .with_sync_state_updater(updater.clone())

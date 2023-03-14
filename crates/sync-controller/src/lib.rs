@@ -36,7 +36,7 @@ enum SyncControllerMessage {
 struct SyncController<DB: Database, U: SyncStateUpdater> {
     db: Arc<DB>,
     pipeline_state: Option<PipelineState<DB, U>>,
-    message_rx: UnboundedReceiver<SyncControllerMessage>,
+    message_rx: UnboundedReceiverStream<SyncControllerMessage>,
     forkchoice_state: Option<ForkchoiceState>,
     is_sync_needed: bool,
     // blockchain_tree: BlockchainTree<DB, C>,
@@ -124,9 +124,8 @@ where
                 SyncControllerMessage::ForkchoiceUpdated(state) => {
                     // TODO:
                     this.forkchoice_state = Some(state);
-                    if this.pipeline_state.is_idle() {
-                        // this.blockchain_tree.make_canonical(state.head_block_hash);
-                    }
+                    // TODO: if this.pipeline_state.is_idle() {
+                    // this.blockchain_tree.make_canonical(state.head_block_hash);
                 }
                 SyncControllerMessage::NewPayload(_block) => {
                     // TODO:

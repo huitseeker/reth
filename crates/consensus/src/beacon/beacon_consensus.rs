@@ -1,4 +1,6 @@
 //! Consensus for ethereum network
+use std::sync::Arc;
+
 use crate::validation;
 use reth_interfaces::consensus::{Consensus, ConsensusError};
 use reth_primitives::{ChainSpec, Hardfork, SealedBlock, SealedHeader, EMPTY_OMMER_ROOT, U256};
@@ -9,12 +11,12 @@ use reth_primitives::{ChainSpec, Hardfork, SealedBlock, SealedHeader, EMPTY_OMME
 #[derive(Debug)]
 pub struct BeaconConsensus {
     /// Chain specification.
-    chain_spec: ChainSpec,
+    chain_spec: Arc<ChainSpec>,
 }
 
 impl BeaconConsensus {
     /// Create a new instance of [BeaconConsensus]
-    pub fn new(chain_spec: ChainSpec) -> Self {
+    pub fn new(chain_spec: Arc<ChainSpec>) -> Self {
         Self { chain_spec }
     }
 }
@@ -74,14 +76,14 @@ impl Consensus for BeaconConsensus {
 
 #[cfg(test)]
 mod test {
+    use super::BeaconConsensus;
     use reth_interfaces::consensus::Consensus;
     use reth_primitives::{ChainSpecBuilder, U256};
-
-    use super::BeaconConsensus;
+    use std::sync::Arc;
 
     #[test]
     fn test_has_block_reward_before_paris() {
-        let chain_spec = ChainSpecBuilder::mainnet().build();
+        let chain_spec = Arc::new(ChainSpecBuilder::mainnet().build());
         let consensus = BeaconConsensus::new(chain_spec);
         assert!(consensus.has_block_reward(U256::ZERO, U256::ZERO));
     }

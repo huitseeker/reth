@@ -62,7 +62,7 @@ pub struct ImportCommand {
         default_value = "mainnet",
         value_parser = genesis_value_parser
     )]
-    chain: ChainSpec,
+    chain: Arc<ChainSpec>,
 
     /// The path to a block file for import.
     ///
@@ -136,7 +136,7 @@ impl ImportCommand {
             .into_task();
 
         let (tip_tx, tip_rx) = watch::channel(H256::zero());
-        let factory = reth_executor::Factory::new(Arc::new(self.chain.clone()));
+        let factory = reth_executor::Factory::new(self.chain.clone());
         let mut pipeline = Pipeline::builder()
             .with_tip_sender(tip_tx)
             .with_sync_state_updater(file_client)
