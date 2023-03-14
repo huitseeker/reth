@@ -153,8 +153,9 @@ where
     }
 
     /// Consume the pipeline and run it. Return the pipeline and its result as a future.
-    pub fn run_as_fut(mut self, db: Arc<DB>) -> PipelineFut<DB, U> {
+    pub fn run_as_fut(mut self, db: Arc<DB>, tip: H256) -> PipelineFut<DB, U> {
         Box::pin(async move {
+            self.set_tip(tip);
             let result = self.run(db).await;
             (self, result)
         })

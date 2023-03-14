@@ -12,6 +12,7 @@ reth-primitives = { path = "../primitives" }
 reth-interfaces = { path = "../interfaces" }
 reth-stages = { path = "../stages" }
 reth-db = { path = "../storage/db" }
+reth-executor = { path = "../executor" }
 
 # async
 tokio = { version = "1.21.2", features = ["sync"] }

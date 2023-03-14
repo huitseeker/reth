@@ -10,13 +10,15 @@
 use futures::{Future, FutureExt, StreamExt};
 use reth_db::database::Database;
 use reth_interfaces::{consensus::ForkchoiceState, sync::SyncStateUpdater};
-use reth_primitives::SealedBlock;
+use reth_primitives::{BlockHash, SealedBlock, H256};
 use reth_stages::{Pipeline, PipelineFut};
 use std::{
+    collections::BTreeMap,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
 };
+use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 enum PipelineState<DB: Database, U: SyncStateUpdater> {
@@ -33,9 +35,9 @@ enum SyncControllerMessage {
 
 struct SyncController<DB: Database, U: SyncStateUpdater> {
     db: Arc<DB>,
-    message_rx: UnboundedReceiverStream<SyncControllerMessage>,
-    forkchoice_state: Option<ForkchoiceState>,
     pipeline_state: Option<PipelineState<DB, U>>,
+    message_rx: UnboundedReceiver<SyncControllerMessage>,
+    forkchoice_state: Option<ForkchoiceState>,
     // blockchain_tree: BlockchainTree<DB, C>,
 }
 
@@ -44,19 +46,29 @@ where
     DB: Database + Unpin + 'static,
     U: SyncStateUpdater + Unpin + 'static,
 {
-    fn next_pipeline_state(
-        &mut self,
-        cx: &mut Context<'_>,
-        current: PipelineState<DB, U>,
-        sync_needed: bool,
-    ) -> PipelineState<DB, U> {
-        match current {
+    pub fn new(
+        db: Arc<DB>,
+        pipeline: Pipeline<DB, U>,
+        message_rx: UnboundedReceiver<SyncControllerMessage>,
+    ) -> Self {
+        Self {
+            db,
+            pipeline_state: Some(PipelineState::Idle(pipeline)),
+            message_rx: UnboundedReceiverStream::new(message_rx),
+            forkchoice_state: None,
+        }
+    }
+
+    fn set_next_pipeline_state(&mut self, cx: &mut Context<'_>, sync_needed: bool, tip: H256) {
+        let next_state = match self.pipeline_state.take().expect("pipeline state is set") {
             PipelineState::Running(mut fut) => {
                 match fut.poll_unpin(cx) {
-                    Poll::Ready((pipeline, _result)) => {
-                        // TODO: handle result
+                    Poll::Ready((pipeline, result)) => {
+                        if let Err(_) = result {
+                            // TODO: handle result
+                        }
                         if sync_needed {
-                            PipelineState::Running(pipeline.run_as_fut(self.db.clone()))
+                            PipelineState::Running(pipeline.run_as_fut(self.db.clone(), tip))
                         } else {
                             PipelineState::Idle(pipeline)
                         }
@@ -66,12 +78,13 @@ where
             }
             PipelineState::Idle(pipeline) => {
                 if sync_needed {
-                    PipelineState::Running(pipeline.run_as_fut(self.db.clone()))
+                    PipelineState::Running(pipeline.run_as_fut(self.db.clone(), tip))
                 } else {
                     PipelineState::Idle(pipeline)
                 }
             }
-        }
+        };
+        self.pipeline_state = Some(next_state);
     }
 }
 
@@ -101,17 +114,17 @@ where
             }
         }
 
-        let _forckchoice_state = match &this.forkchoice_state {
+        let forckchoice_state = match &this.forkchoice_state {
             Some(state) => state,
             None => return Poll::Pending,
         };
 
         // TODO:
-        let current_pipeline_state = this.pipeline_state.take().expect("pipeline state is set");
-        let next_pipeline_state =
-            this.next_pipeline_state(cx, current_pipeline_state, pipeline_sync_needed);
-        this.pipeline_state = Some(next_pipeline_state);
+        this.set_next_pipeline_state(cx, pipeline_sync_needed, forckchoice_state.head_block_hash);
 
         Poll::Pending
     }
 }
+
+#[cfg(test)]
+mod tests {}
