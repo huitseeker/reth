@@ -50,7 +50,6 @@ use reth_staged_sync::{
 use reth_stages::{
     prelude::*,
     stages::{ExecutionStage, SenderRecoveryStage, TotalDifficultyStage, FINISH},
-    DefaultDB,
 };
 use reth_tasks::TaskExecutor;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
@@ -334,11 +333,11 @@ impl Command {
             NetworkManager::builder(config).await?.request_handler(client).split_with_handle();
 
         let known_peers_file = self.network.persistent_peers_file();
-        task_executor.spawn_critical_with_signal("p2p network task", |shutdown| async move {
-            run_network_until_shutdown(shutdown, network, known_peers_file).await
+        task_executor.spawn_critical_with_signal("p2p network task", |shutdown| {
+            run_network_until_shutdown(shutdown, network, known_peers_file)
         });
 
-        task_executor.spawn_critical("p2p eth request handler", async move { eth.await });
+        task_executor.spawn_critical("p2p eth request handler", eth);
 
         // TODO spawn pool
 
@@ -436,6 +435,7 @@ impl Command {
         }
 
         let (tip_tx, tip_rx) = watch::channel(H256::zero());
+        let factory = reth_executor::Factory::new(Arc::new(self.chain.clone()));
         let pipeline = builder
             .with_tip_sender(tip_tx)
             .with_sync_state_updater(updater.clone())
@@ -446,20 +446,16 @@ impl Command {
                     header_downloader,
                     body_downloader,
                     updater,
+                    factory.clone(),
                 )
-                .set(TotalDifficultyStage {
-                    chain_spec: self.chain.clone(),
-                    commit_threshold: stage_conf.total_difficulty.commit_threshold,
-                })
+                .set(
+                    TotalDifficultyStage::new(consensus.clone())
+                        .with_commit_threshold(stage_conf.total_difficulty.commit_threshold),
+                )
                 .set(SenderRecoveryStage {
                     commit_threshold: stage_conf.sender_recovery.commit_threshold,
                 })
-                .set({
-                    let mut stage: ExecutionStage<'_, DefaultDB<'_>> =
-                        ExecutionStage::from(self.chain.clone());
-                    stage.commit_threshold = stage_conf.execution.commit_threshold;
-                    stage
-                }),
+                .set(ExecutionStage::new(factory, stage_conf.execution.commit_threshold)),
             )
             .build();
 

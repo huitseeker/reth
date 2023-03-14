@@ -25,7 +25,6 @@ use reth_staged_sync::{
 use reth_stages::{
     prelude::*,
     stages::{ExecutionStage, SenderRecoveryStage, TotalDifficultyStage},
-    DefaultDB,
 };
 use std::sync::Arc;
 use tokio::sync::watch;
@@ -137,6 +136,7 @@ impl ImportCommand {
             .into_task();
 
         let (tip_tx, tip_rx) = watch::channel(H256::zero());
+        let factory = reth_executor::Factory::new(Arc::new(self.chain.clone()));
         let mut pipeline = Pipeline::builder()
             .with_tip_sender(tip_tx)
             .with_sync_state_updater(file_client)
@@ -147,20 +147,16 @@ impl ImportCommand {
                     header_downloader,
                     body_downloader,
                     NoopStatusUpdater::default(),
+                    factory.clone(),
                 )
-                .set(TotalDifficultyStage {
-                    chain_spec: self.chain.clone(),
-                    commit_threshold: config.stages.total_difficulty.commit_threshold,
-                })
+                .set(
+                    TotalDifficultyStage::new(consensus.clone())
+                        .with_commit_threshold(config.stages.total_difficulty.commit_threshold),
+                )
                 .set(SenderRecoveryStage {
                     commit_threshold: config.stages.sender_recovery.commit_threshold,
                 })
-                .set({
-                    let mut stage: ExecutionStage<'_, DefaultDB<'_>> =
-                        ExecutionStage::from(self.chain.clone());
-                    stage.commit_threshold = config.stages.execution.commit_threshold;
-                    stage
-                }),
+                .set(ExecutionStage::new(factory, config.stages.execution.commit_threshold)),
             )
             .with_max_block(0)
             .build();

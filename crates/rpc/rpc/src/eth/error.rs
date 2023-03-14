@@ -1,36 +1,14 @@
-//! Error variants for the `eth_` namespace.
+//! Implementation specific Errors for the `eth_` namespace.
 
 use crate::result::{internal_rpc_err, rpc_err};
 use jsonrpsee::{core::Error as RpcError, types::error::INVALID_PARAMS_CODE};
 use reth_primitives::{constants::SELECTOR_LEN, Address, U128, U256};
-use reth_rpc_types::BlockError;
-use reth_transaction_pool::error::PoolError;
+use reth_rpc_types::{error::EthRpcErrorCode, BlockError};
+use reth_transaction_pool::error::{InvalidPoolTransactionError, PoolError};
 use revm::primitives::{EVMError, Halt};
 
 /// Result alias
 pub(crate) type EthResult<T> = Result<T, EthApiError>;
-
-/// List of JSON-RPC error codes
-#[derive(Debug, Copy, PartialEq, Eq, Clone)]
-pub(crate) enum EthRpcErrorCode {
-    /// Failed to send transaction, See also <https://github.com/MetaMask/eth-rpc-errors/blob/main/src/error-constants.ts>
-    TransactionRejected,
-    /// Custom geth error code, <https://github.com/vapory-legacy/wiki/blob/master/JSON-RPC-Error-Codes-Improvement-Proposal.md>
-    ExecutionError,
-    /// <https://eips.ethereum.org/EIPS/eip-1898>
-    InvalidInput,
-}
-
-impl EthRpcErrorCode {
-    /// Returns the error code as `i32`
-    pub(crate) const fn code(&self) -> i32 {
-        match *self {
-            EthRpcErrorCode::TransactionRejected => -32003,
-            EthRpcErrorCode::ExecutionError => 3,
-            EthRpcErrorCode::InvalidInput => -32000,
-        }
-    }
-}
 
 /// Errors that can occur when interacting with the `eth_` namespace
 #[derive(Debug, thiserror::Error)]
@@ -44,7 +22,7 @@ pub(crate) enum EthApiError {
     #[error("Invalid transaction signature")]
     InvalidTransactionSignature,
     #[error(transparent)]
-    PoolError(GethTxPoolError),
+    PoolError(RpcPoolError),
     #[error("Unknown block number")]
     UnknownBlockNumber,
     #[error("Invalid block range")]
@@ -77,8 +55,8 @@ pub(crate) enum EthApiError {
 }
 
 impl From<EthApiError> for RpcError {
-    fn from(value: EthApiError) -> Self {
-        match value {
+    fn from(error: EthApiError) -> Self {
+        match error {
             EthApiError::FailedToDecodeSignedTransaction |
             EthApiError::InvalidTransactionSignature |
             EthApiError::EmptyRawTransactionData |
@@ -86,11 +64,15 @@ impl From<EthApiError> for RpcError {
             EthApiError::InvalidBlockRange |
             EthApiError::ConflictingRequestGasPrice { .. } |
             EthApiError::ConflictingRequestGasPriceAndTipSet { .. } |
-            EthApiError::RequestLegacyGasPriceAndTipSet { .. } => {
-                rpc_err(INVALID_PARAMS_CODE, value.to_string(), None)
+            EthApiError::RequestLegacyGasPriceAndTipSet { .. } |
+            EthApiError::BothStateAndStateDiffInOverride(_) => {
+                rpc_err(INVALID_PARAMS_CODE, error.to_string(), None)
             }
             EthApiError::InvalidTransaction(err) => err.into(),
-            err => internal_rpc_err(err.to_string()),
+            EthApiError::PoolError(_) |
+            EthApiError::PrevrandaoNotSet |
+            EthApiError::InvalidBlockData(_) |
+            EthApiError::Internal(_) => internal_rpc_err(error.to_string()),
         }
     }
 }
@@ -179,15 +161,17 @@ pub enum InvalidTransactionError {
     /// Unspecific evm halt error
     #[error("EVM error {0:?}")]
     EvmHalt(Halt),
+    #[error("Invalid chain id")]
+    InvalidChainId,
 }
 
 impl InvalidTransactionError {
     /// Returns the rpc error code for this error.
     fn error_code(&self) -> i32 {
         match self {
-            InvalidTransactionError::GasTooLow | InvalidTransactionError::GasTooHigh => {
-                EthRpcErrorCode::InvalidInput.code()
-            }
+            InvalidTransactionError::InvalidChainId |
+            InvalidTransactionError::GasTooLow |
+            InvalidTransactionError::GasTooHigh => EthRpcErrorCode::InvalidInput.code(),
             InvalidTransactionError::Revert(_) => EthRpcErrorCode::ExecutionError.code(),
             _ => EthRpcErrorCode::TransactionRejected.code(),
         }
@@ -214,6 +198,7 @@ impl From<revm::primitives::InvalidTransaction> for InvalidTransactionError {
     fn from(err: revm::primitives::InvalidTransaction) -> Self {
         use revm::primitives::InvalidTransaction;
         match err {
+            InvalidTransaction::InvalidChainId => InvalidTransactionError::InvalidChainId,
             InvalidTransaction::GasMaxFeeGreaterThanPriorityFee => {
                 InvalidTransactionError::TipAboveFeeCap
             }
@@ -281,9 +266,9 @@ impl std::fmt::Display for RevertError {
 
 impl std::error::Error for RevertError {}
 
-/// A helper error type that mirrors `geth` Txpool's error messages
+/// A helper error type that's mainly used to mirror `geth` Txpool's error messages
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum GethTxPoolError {
+pub(crate) enum RpcPoolError {
     #[error("already known")]
     AlreadyKnown,
     #[error("invalid sender")]
@@ -300,24 +285,28 @@ pub(crate) enum GethTxPoolError {
     NegativeValue,
     #[error("oversized data")]
     OversizedData,
+    #[error(transparent)]
+    Invalid(#[from] InvalidPoolTransactionError),
+    #[error(transparent)]
+    Other(Box<dyn std::error::Error + Send + Sync>),
 }
 
-impl From<PoolError> for GethTxPoolError {
-    fn from(err: PoolError) -> GethTxPoolError {
+impl From<PoolError> for RpcPoolError {
+    fn from(err: PoolError) -> RpcPoolError {
         match err {
-            PoolError::ReplacementUnderpriced(_) => GethTxPoolError::ReplaceUnderpriced,
-            PoolError::ProtocolFeeCapTooLow(_, _) => GethTxPoolError::Underpriced,
-            PoolError::SpammerExceededCapacity(_, _) => GethTxPoolError::TxPoolOverflow,
-            PoolError::DiscardedOnInsert(_) => GethTxPoolError::TxPoolOverflow,
-            PoolError::TxExceedsGasLimit(_, _, _) => GethTxPoolError::GasLimit,
-            PoolError::TxExceedsMaxInitCodeSize(_, _, _) => GethTxPoolError::OversizedData,
+            PoolError::ReplacementUnderpriced(_) => RpcPoolError::ReplaceUnderpriced,
+            PoolError::ProtocolFeeCapTooLow(_, _) => RpcPoolError::Underpriced,
+            PoolError::SpammerExceededCapacity(_, _) => RpcPoolError::TxPoolOverflow,
+            PoolError::DiscardedOnInsert(_) => RpcPoolError::TxPoolOverflow,
+            PoolError::InvalidTransaction(_, err) => err.into(),
+            PoolError::Other(_, err) => RpcPoolError::Other(err),
         }
     }
 }
 
 impl From<PoolError> for EthApiError {
     fn from(err: PoolError) -> Self {
-        EthApiError::PoolError(GethTxPoolError::from(err))
+        EthApiError::PoolError(RpcPoolError::from(err))
     }
 }
 
