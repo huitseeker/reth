@@ -156,7 +156,7 @@ where
     pub fn run_as_fut(mut self, db: Arc<DB>, tip: H256) -> PipelineFut<DB, U> {
         Box::pin(async move {
             self.set_tip(tip);
-            let result = self.run(db).await;
+            let result = self.run(db).await; // TODO: run_loop
             (self, result)
         })
     }

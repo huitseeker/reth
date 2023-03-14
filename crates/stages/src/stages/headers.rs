@@ -113,7 +113,7 @@ where
     /// Awaits the next tip message with a non-zero block hash
     async fn next_tip(&mut self) -> H256 {
         loop {
-            let _ = self.tip_rx.changed().await;
+            let _ = self.tip_rx.changed().await; // TODO: remove this await
             let tip = self.tip_rx.borrow();
             if !tip.is_zero() {
                 return tip.clone()
