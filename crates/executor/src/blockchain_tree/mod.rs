@@ -77,7 +77,7 @@ pub struct BlockchainTree<DB: Database, C: Consensus, EF: ExecutorFactory> {
 /// Container for external abstractions.
 struct Externals<DB: Database, C: Consensus, EF: ExecutorFactory> {
     /// Save sidechain, do reorgs and push new block to canonical chain that is inside db.
-    db: DB,
+    db: Arc<DB>,
     /// Consensus checks
     consensus: C,
     /// Create executor to execute blocks.
@@ -104,7 +104,7 @@ pub struct BlockHashes<'a> {
 impl<DB: Database, C: Consensus, EF: ExecutorFactory> BlockchainTree<DB, C, EF> {
     /// New blockchain tree
     pub fn new(
-        db: DB,
+        db: Arc<DB>,
         consensus: C,
         executor_factory: EF,
         chain_spec: Arc<ChainSpec>,

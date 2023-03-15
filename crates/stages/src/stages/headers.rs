@@ -322,7 +322,7 @@ mod tests {
 
             fn stage(&self) -> Self::S {
                 HeaderStage {
-                    consensus: self.consensus.clone(),
+                    consensus: self.consensus.clone(), // TODO: fix
                     downloader: (*self.downloader_factory)(),
                 }
             }

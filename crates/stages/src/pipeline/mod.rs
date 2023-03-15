@@ -90,7 +90,7 @@ pub struct Pipeline<DB: Database, U: SyncStateUpdater> {
 
 /// TODO:
 pub type PipelineFut<DB, U> =
-    Pin<Box<dyn Future<Output = (Pipeline<DB, U>, Result<(), PipelineError>)>>>;
+    Pin<Box<dyn Future<Output = (Pipeline<DB, U>, Result<ControlFlow, PipelineError>)>>>;
 
 impl<DB: Database, U: SyncStateUpdater> Default for Pipeline<DB, U> {
     fn default() -> Self {
@@ -154,9 +154,13 @@ where
 
     /// Consume the pipeline and run it. Return the pipeline and its result as a future.
     pub fn run_as_fut(mut self, db: Arc<DB>, tip: H256) -> PipelineFut<DB, U> {
+        // TODO: register metrics in the builder
+        // self.register_metrics(db.clone());
+
         Box::pin(async move {
             self.set_tip(tip);
-            let result = self.run(db).await; // TODO: run_loop
+            let result = self.run_loop(db).await;
+            trace!(target: "sync::pipeline", ?tip, ?result, "Pipeline finished");
             (self, result)
         })
     }
@@ -167,7 +171,7 @@ where
         self.register_metrics(db.clone());
 
         loop {
-            let next_action = self.run_loop(db.as_ref()).await?;
+            let next_action = self.run_loop(db.clone()).await?;
 
             // Terminate the loop early if it's reached the maximum user
             // configured block.
@@ -195,7 +199,7 @@ where
     /// If any stage is unsuccessful at execution, we proceed to
     /// unwind. This will undo the progress across the entire pipeline
     /// up to the block that caused the error.
-    async fn run_loop(&mut self, db: &DB) -> Result<ControlFlow, PipelineError> {
+    async fn run_loop(&mut self, db: Arc<DB>) -> Result<ControlFlow, PipelineError> {
         let mut previous_stage = None;
         for stage_index in 0..self.stages.len() {
             let stage = &self.stages[stage_index];
@@ -209,7 +213,7 @@ where
 
             trace!(target: "sync::pipeline", stage = %stage_id, "Executing stage");
             let next = self
-                .execute_stage_to_completion(db, previous_stage, stage_index)
+                .execute_stage_to_completion(db.as_ref(), previous_stage, stage_index)
                 .instrument(info_span!("execute", stage = %stage_id))
                 .await?;
 
@@ -225,7 +229,7 @@ where
                     if let Some(ref updater) = self.sync_state_updater {
                         updater.update_sync_state(SyncState::Downloading { target_block: target });
                     }
-                    self.unwind(db, target, bad_block).await?;
+                    self.unwind(db.as_ref(), target, bad_block).await?;
                     return Ok(ControlFlow::Unwind { target, bad_block })
                 }
             }
@@ -398,12 +402,11 @@ pub(crate) type BoxedStage<DB> = Box<dyn Stage<DB>>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{StageId, UnwindOutput};
+    use crate::{test_utils::TestStage, StageId, UnwindOutput};
     use assert_matches::assert_matches;
     use reth_db::mdbx::{self, test_utils, EnvKind};
     use reth_interfaces::{consensus, provider::ProviderError, sync::NoopSyncStateUpdate};
     use tokio_stream::StreamExt;
-    use utils::TestStage;
 
     #[test]
     fn record_progress_calculates_outliers() {
@@ -674,60 +677,5 @@ mod tests {
                 number: 5
             })))
         );
-    }
-
-    mod utils {
-        use super::*;
-        use async_trait::async_trait;
-        use std::collections::VecDeque;
-
-        pub(crate) struct TestStage {
-            id: StageId,
-            exec_outputs: VecDeque<Result<ExecOutput, StageError>>,
-            unwind_outputs: VecDeque<Result<UnwindOutput, StageError>>,
-        }
-
-        impl TestStage {
-            pub(crate) fn new(id: StageId) -> Self {
-                Self { id, exec_outputs: VecDeque::new(), unwind_outputs: VecDeque::new() }
-            }
-
-            pub(crate) fn add_exec(mut self, output: Result<ExecOutput, StageError>) -> Self {
-                self.exec_outputs.push_back(output);
-                self
-            }
-
-            pub(crate) fn add_unwind(mut self, output: Result<UnwindOutput, StageError>) -> Self {
-                self.unwind_outputs.push_back(output);
-                self
-            }
-        }
-
-        #[async_trait]
-        impl<DB: Database> Stage<DB> for TestStage {
-            fn id(&self) -> StageId {
-                self.id
-            }
-
-            async fn execute(
-                &mut self,
-                _: &mut Transaction<'_, DB>,
-                _input: ExecInput,
-            ) -> Result<ExecOutput, StageError> {
-                self.exec_outputs
-                    .pop_front()
-                    .unwrap_or_else(|| panic!("Test stage {} executed too many times.", self.id))
-            }
-
-            async fn unwind(
-                &mut self,
-                _: &mut Transaction<'_, DB>,
-                _input: UnwindInput,
-            ) -> Result<UnwindOutput, StageError> {
-                self.unwind_outputs
-                    .pop_front()
-                    .unwrap_or_else(|| panic!("Test stage {} unwound too many times.", self.id))
-            }
-        }
     }
 }

@@ -42,9 +42,6 @@ pub struct EngineApi<Client> {
     chain_spec: Arc<ChainSpec>,
     message_rx: UnboundedReceiverStream<EngineApiMessage>,
     forkchoice_state_tx: watch::Sender<ForkchoiceState>,
-    // TODO: Placeholder for storing future blocks. Make cache bounded. Use lru
-    // local_store: HashMap<H64, ExecutionPayload>,
-    // remote_store: HashMap<H64, ExecutionPayload>,
 }
 
 impl<Client: HeaderProvider + BlockProvider + StateProviderFactory + EvmEnvProvider>
