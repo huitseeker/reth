@@ -5,10 +5,11 @@ use reth_interfaces::{
     consensus::{Consensus, ForkchoiceState},
     sync::SyncStateUpdater,
 };
-use reth_primitives::SealedBlock;
+use reth_primitives::{SealedBlock, H256};
 use reth_provider::ExecutorFactory;
 use reth_stages::{Pipeline, PipelineError, PipelineFut};
 use std::{
+    default,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
@@ -22,9 +23,28 @@ pub enum PipelineState<DB: Database, U: SyncStateUpdater> {
     Running(PipelineFut<DB, U>),
 }
 
+impl<DB: Database, U: SyncStateUpdater> PipelineState<DB, U> {
+    fn is_idle(&self) -> bool {
+        matches!(self, PipelineState::Idle(_))
+    }
+}
+
 pub enum SyncControllerMessage {
     ForkchoiceUpdated(ForkchoiceState),
     NewPayload(SealedBlock), // TODO: add oneshot for sending result back
+}
+
+#[derive(Default)]
+pub enum SyncControllerAction {
+    #[default]
+    None,
+    RunPipeline,
+}
+
+impl SyncControllerAction {
+    fn run_pipeline(&self) -> bool {
+        matches!(self, SyncControllerAction::RunPipeline)
+    }
 }
 
 #[must_use = "Future does nothing unless polled"]
@@ -34,7 +54,7 @@ pub struct SyncController<DB: Database, U: SyncStateUpdater, C: Consensus, EF: E
     blockchain_tree: BlockchainTree<DB, C, EF>,
     message_rx: UnboundedReceiverStream<SyncControllerMessage>,
     forkchoice_state: Option<ForkchoiceState>,
-    is_sync_needed: bool,
+    next_action: SyncControllerAction,
 }
 
 impl<DB, U, C, EF> SyncController<DB, U, C, EF>
@@ -56,52 +76,55 @@ where
             blockchain_tree,
             message_rx: UnboundedReceiverStream::new(message_rx),
             forkchoice_state: None,
-            is_sync_needed: true,
+            next_action: SyncControllerAction::RunPipeline,
         }
     }
 
-    fn set_next_pipeline_state(
-        &mut self,
-        cx: &mut Context<'_>,
-        sync_needed: bool,
-    ) -> Result<(), PipelineError> {
+    fn pipeline_is_idle(&self) -> bool {
+        self.pipeline_state.as_ref().expect("pipeline state is set").is_idle()
+    }
+
+    fn pipeline_run_needed(&mut self) {
+        self.next_action = SyncControllerAction::RunPipeline;
+    }
+
+    fn set_next_pipeline_state(&mut self, cx: &mut Context<'_>) -> Result<(), PipelineError> {
         // Lookup the forkchoice state. We can't launch the pipeline without the tip.
         let forckchoice_state = match &self.forkchoice_state {
             Some(state) => state,
             None => return Ok(()),
         };
 
+        let tip = forckchoice_state.head_block_hash;
         let next_state = match self.pipeline_state.take().expect("pipeline state is set") {
             PipelineState::Running(mut fut) => {
                 match fut.poll_unpin(cx) {
                     Poll::Ready((pipeline, result)) => {
                         // Any pipeline error at this point is fatal.
                         result?;
-
-                        if sync_needed {
-                            PipelineState::Running(
-                                pipeline
-                                    .run_as_fut(self.db.clone(), forckchoice_state.head_block_hash),
-                            )
-                        } else {
-                            PipelineState::Idle(pipeline)
-                        }
+                        // Get next pipeline state.
+                        self.next_pipeline_state(pipeline, tip)
                     }
                     Poll::Pending => PipelineState::Running(fut),
                 }
             }
-            PipelineState::Idle(pipeline) => {
-                if sync_needed {
-                    PipelineState::Running(
-                        pipeline.run_as_fut(self.db.clone(), forckchoice_state.head_block_hash),
-                    )
-                } else {
-                    PipelineState::Idle(pipeline)
-                }
-            }
+            PipelineState::Idle(pipeline) => self.next_pipeline_state(pipeline, tip),
         };
         self.pipeline_state = Some(next_state);
         Ok(())
+    }
+
+    fn next_pipeline_state(
+        &mut self,
+        pipeline: Pipeline<DB, U>,
+        tip: H256,
+    ) -> PipelineState<DB, U> {
+        let next_action = std::mem::take(&mut self.next_action);
+        if next_action.run_pipeline() {
+            PipelineState::Running(pipeline.run_as_fut(self.db.clone(), tip))
+        } else {
+            PipelineState::Idle(pipeline)
+        }
     }
 }
 
@@ -124,29 +147,33 @@ where
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
 
-        let mut pipeline_sync_needed = false;
-        let pipeline_is_idle = matches!(this.pipeline_state, Some(PipelineState::Idle(_)));
+        let pipeline_is_idle = this.pipeline_is_idle();
         while let Poll::Ready(Some(msg)) = this.message_rx.poll_next_unpin(cx) {
             match msg {
                 SyncControllerMessage::ForkchoiceUpdated(state) => {
                     if pipeline_is_idle {
-                        // TODO: handle error
-                        this.blockchain_tree.make_canonical(&state.head_block_hash).unwrap();
+                        let result = this.blockchain_tree.make_canonical(&state.head_block_hash);
+                        // TODO: match error
+                        if result.is_err() {
+                            this.pipeline_run_needed();
+                        }
                     }
                     this.forkchoice_state = Some(state);
                 }
                 SyncControllerMessage::NewPayload(block) => {
                     if pipeline_is_idle {
-                        // TODO: handle error
-                        this.blockchain_tree.insert_block(block).unwrap();
+                        let result = this.blockchain_tree.insert_block(block);
+                        // TODO: match error
+                        if result.is_err() {
+                            this.pipeline_run_needed();
+                        }
                     }
                     // TODO: else put into a buffer
                 }
             }
         }
 
-        // TODO:
-        match this.set_next_pipeline_state(cx, pipeline_sync_needed) {
+        match this.set_next_pipeline_state(cx) {
             Ok(()) => Poll::Pending,
             error @ Err(_) => Poll::Ready(error),
         }
