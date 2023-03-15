@@ -8,7 +8,7 @@ use self::{
 };
 use chain::{BlockChainId, Chain, ForkBlock};
 use reth_db::{cursor::DbCursorRO, database::Database, tables, transaction::DbTx};
-use reth_interfaces::{consensus::Consensus, executor::Error as ExecError, Error};
+use reth_interfaces::{consensus::Consensus, executor::Error as ExecutionError, Error};
 use reth_primitives::{BlockHash, BlockNumber, ChainSpec, SealedBlock, SealedBlockWithSenders};
 use reth_provider::{
     ExecutorFactory, HeaderProvider, ShareableDatabase, StateProvider, StateProviderFactory,
@@ -159,14 +159,15 @@ impl<DB: Database, C: Consensus, EF: ExecutorFactory> BlockchainTree<DB, C, EF> 
         let block_hashes = self.all_chain_hashes(chain_id);
 
         // get canonical fork.
-        let canonical_fork =
-            self.canonical_fork(chain_id).ok_or(ExecError::BlockChainIdConsistency { chain_id })?;
+        let canonical_fork = self
+            .canonical_fork(chain_id)
+            .ok_or(ExecutionError::BlockChainIdConsistency { chain_id })?;
 
         // get chain that block needs to join to.
         let parent_chain = self
             .chains
             .get_mut(&chain_id)
-            .ok_or(ExecError::BlockChainIdConsistency { chain_id })?;
+            .ok_or(ExecutionError::BlockChainIdConsistency { chain_id })?;
         let chain_tip = parent_chain.tip().hash();
 
         let canonical_block_hashes = self.block_indices.canonical_chain();
@@ -223,7 +224,7 @@ impl<DB: Database, C: Consensus, EF: ExecutorFactory> BlockchainTree<DB, C, EF> 
         let db = self.externals.shareable_db();
         let parent_header = db
             .header(&block.parent_hash)?
-            .ok_or(ExecError::CanonicalChain { block_hash: block.parent_hash })?;
+            .ok_or(ExecutionError::CanonicalChain { block_hash: block.parent_hash })?;
 
         let provider = if block.parent_hash == canonical_tip {
             Box::new(db.latest()?) as Box<dyn StateProvider>
@@ -304,7 +305,7 @@ impl<DB: Database, C: Consensus, EF: ExecutorFactory> BlockchainTree<DB, C, EF> 
     /// Insert block inside tree. recover transaction signers and
     /// internaly call [`BlockchainTree::insert_block_with_senders`] fn.
     pub fn insert_block(&mut self, block: SealedBlock) -> Result<bool, Error> {
-        let block = block.seal_with_senders().ok_or(ExecError::SenderRecoveryError)?;
+        let block = block.seal_with_senders().ok_or(ExecutionError::SenderRecoveryError)?;
         self.insert_block_with_senders(&block)
     }
 
@@ -324,7 +325,7 @@ impl<DB: Database, C: Consensus, EF: ExecutorFactory> BlockchainTree<DB, C, EF> 
         // check if block number is inside pending block slide
         let last_finalized_block = self.block_indices.last_finalized_block();
         if block.number <= last_finalized_block {
-            return Err(ExecError::PendingBlockIsFinalized {
+            return Err(ExecutionError::PendingBlockIsFinalized {
                 block_number: block.number,
                 block_hash: block.hash(),
                 last_finalized: last_finalized_block,
@@ -334,7 +335,7 @@ impl<DB: Database, C: Consensus, EF: ExecutorFactory> BlockchainTree<DB, C, EF> 
 
         // we will not even try to insert blocks that are too far in future.
         if block.number > last_finalized_block + self.max_blocks_in_chain {
-            return Err(ExecError::PendingBlockIsInFuture {
+            return Err(ExecutionError::PendingBlockIsInFuture {
                 block_number: block.number,
                 block_hash: block.hash(),
                 last_finalized: last_finalized_block,
@@ -446,7 +447,7 @@ impl<DB: Database, C: Consensus, EF: ExecutorFactory> BlockchainTree<DB, C, EF> 
             if self.block_indices.is_block_hash_canonical(block_hash) {
                 return Ok(())
             }
-            return Err(ExecError::BlockHashNotFoundInChain { block_hash: *block_hash }.into())
+            return Err(ExecutionError::BlockHashNotFoundInChain { block_hash: *block_hash }.into())
         };
         let chain = self.chains.remove(&chain_id).expect("To be present");
 
@@ -513,11 +514,11 @@ impl<DB: Database, C: Consensus, EF: ExecutorFactory> BlockchainTree<DB, C, EF> 
         for item in blocks.into_iter().zip(changesets.into_iter()) {
             let ((_, block), changeset) = item;
             tx.insert_block(block, self.externals.chain_spec.as_ref(), changeset)
-                .map_err(|e| ExecError::CanonicalCommit { inner: e.to_string() })?;
+                .map_err(|e| ExecutionError::CanonicalCommit { inner: e.to_string() })?;
         }
         // update pipeline progress.
         tx.update_pipeline_stages(new_tip)
-            .map_err(|e| ExecError::PipelineStatusUpdate { inner: e.to_string() })?;
+            .map_err(|e| ExecutionError::PipelineStatusUpdate { inner: e.to_string() })?;
 
         tx.commit()?;
 
@@ -538,11 +539,11 @@ impl<DB: Database, C: Consensus, EF: ExecutorFactory> BlockchainTree<DB, C, EF> 
                 self.externals.chain_spec.as_ref(),
                 (revert_until + 1)..,
             )
-            .map_err(|e| ExecError::CanonicalRevert { inner: e.to_string() })?;
+            .map_err(|e| ExecutionError::CanonicalRevert { inner: e.to_string() })?;
 
         // update pipeline progress.
         tx.update_pipeline_stages(revert_until)
-            .map_err(|e| ExecError::PipelineStatusUpdate { inner: e.to_string() })?;
+            .map_err(|e| ExecutionError::PipelineStatusUpdate { inner: e.to_string() })?;
 
         tx.commit()?;
 
@@ -674,7 +675,7 @@ mod tests {
         // insert block2 hits max chain size
         assert_eq!(
             tree.insert_block_with_senders(&block2),
-            Err(ExecError::PendingBlockIsInFuture {
+            Err(ExecutionError::PendingBlockIsInFuture {
                 block_number: block2.number,
                 block_hash: block2.hash(),
                 last_finalized: 9,

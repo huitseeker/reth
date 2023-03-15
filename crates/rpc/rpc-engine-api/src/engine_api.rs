@@ -275,7 +275,6 @@ impl<Client: HeaderProvider + BlockProvider + StateProviderFactory + EvmEnvProvi
         }
 
         let Some(parent) = self.client.block_by_hash(parent_hash)? else {
-             // TODO: cache block for storing later
              return Ok(PayloadStatus::from_status(PayloadStatusEnum::Syncing))
         };
 

@@ -7,18 +7,18 @@ use reth_interfaces::{
 };
 use reth_primitives::{SealedBlock, H256};
 use reth_provider::ExecutorFactory;
+use reth_rpc_types::engine::PayloadStatusEnum;
 use reth_stages::{Pipeline, PipelineError, PipelineFut};
 use std::{
-    default,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
 };
-use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::{mpsc::UnboundedReceiver, oneshot};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::*;
 
-pub enum PipelineState<DB: Database, U: SyncStateUpdater> {
+enum PipelineState<DB: Database, U: SyncStateUpdater> {
     Idle(Pipeline<DB, U>),
     Running(PipelineFut<DB, U>),
 }
@@ -30,8 +30,8 @@ impl<DB: Database, U: SyncStateUpdater> PipelineState<DB, U> {
 }
 
 pub enum SyncControllerMessage {
-    ForkchoiceUpdated(ForkchoiceState),
-    NewPayload(SealedBlock), // TODO: add oneshot for sending result back
+    ForkchoiceUpdated(ForkchoiceState, oneshot::Sender<PayloadStatusEnum>),
+    NewPayload(SealedBlock, oneshot::Sender<PayloadStatusEnum>),
 }
 
 #[derive(Default)]
@@ -88,6 +88,37 @@ where
         self.next_action = SyncControllerAction::RunPipeline;
     }
 
+    fn on_forkchoice_updated(&mut self, state: ForkchoiceState) -> PayloadStatusEnum {
+        self.forkchoice_state = Some(state.clone());
+        if self.pipeline_is_idle() {
+            match self.blockchain_tree.make_canonical(&state.head_block_hash) {
+                Ok(_) => PayloadStatusEnum::Valid,
+                // TODO: handle/match error
+                Err(_error) => {
+                    self.pipeline_run_needed();
+                    PayloadStatusEnum::Syncing
+                }
+            }
+        } else {
+            PayloadStatusEnum::Syncing
+        }
+    }
+
+    fn on_new_payload(&mut self, block: SealedBlock) -> PayloadStatusEnum {
+        if self.pipeline_is_idle() {
+            match self.blockchain_tree.insert_block(block) {
+                Ok(true) => PayloadStatusEnum::Valid,
+                Ok(false) => {
+                    self.pipeline_run_needed();
+                    PayloadStatusEnum::Syncing
+                }
+                Err(error) => PayloadStatusEnum::Invalid { validation_error: error.to_string() },
+            }
+        } else {
+            PayloadStatusEnum::Syncing
+        }
+    }
+
     fn set_next_pipeline_state(&mut self, cx: &mut Context<'_>) -> Result<(), PipelineError> {
         // Lookup the forkchoice state. We can't launch the pipeline without the tip.
         let forckchoice_state = match &self.forkchoice_state {
@@ -121,6 +152,7 @@ where
     ) -> PipelineState<DB, U> {
         let next_action = std::mem::take(&mut self.next_action);
         if next_action.run_pipeline() {
+            trace!(target: "sync::controller", ?tip, "Starting the pipeline");
             PipelineState::Running(pipeline.run_as_fut(self.db.clone(), tip))
         } else {
             PipelineState::Idle(pipeline)
@@ -147,28 +179,15 @@ where
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
 
-        let pipeline_is_idle = this.pipeline_is_idle();
         while let Poll::Ready(Some(msg)) = this.message_rx.poll_next_unpin(cx) {
             match msg {
-                SyncControllerMessage::ForkchoiceUpdated(state) => {
-                    if pipeline_is_idle {
-                        let result = this.blockchain_tree.make_canonical(&state.head_block_hash);
-                        // TODO: match error
-                        if result.is_err() {
-                            this.pipeline_run_needed();
-                        }
-                    }
-                    this.forkchoice_state = Some(state);
+                SyncControllerMessage::ForkchoiceUpdated(state, tx) => {
+                    let response = this.on_forkchoice_updated(state);
+                    let _ = tx.send(response);
                 }
-                SyncControllerMessage::NewPayload(block) => {
-                    if pipeline_is_idle {
-                        let result = this.blockchain_tree.insert_block(block);
-                        // TODO: match error
-                        if result.is_err() {
-                            this.pipeline_run_needed();
-                        }
-                    }
-                    // TODO: else put into a buffer
+                SyncControllerMessage::NewPayload(block, tx) => {
+                    let response = this.on_new_payload(block);
+                    let _ = tx.send(response);
                 }
             }
         }

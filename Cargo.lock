@@ -5127,6 +5127,7 @@ dependencies = [
  "reth-interfaces",
  "reth-primitives",
  "reth-provider",
+ "reth-rpc-types",
  "reth-stages",
  "tokio",
  "tokio-stream",
