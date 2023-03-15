@@ -1,3 +1,4 @@
+use crate::pipeline_state::PipelineState;
 use futures::{Future, FutureExt, StreamExt};
 use reth_db::database::Database;
 use reth_executor::blockchain_tree::BlockchainTree;
@@ -8,7 +9,7 @@ use reth_interfaces::{
 use reth_primitives::{SealedBlock, H256};
 use reth_provider::ExecutorFactory;
 use reth_rpc_types::engine::PayloadStatusEnum;
-use reth_stages::{Pipeline, PipelineError, PipelineFut};
+use reth_stages::{Pipeline, PipelineError};
 use std::{
     pin::Pin,
     sync::Arc,
@@ -17,17 +18,6 @@ use std::{
 use tokio::sync::{mpsc::UnboundedReceiver, oneshot};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::*;
-
-enum PipelineState<DB: Database, U: SyncStateUpdater> {
-    Idle(Pipeline<DB, U>),
-    Running(PipelineFut<DB, U>),
-}
-
-impl<DB: Database, U: SyncStateUpdater> PipelineState<DB, U> {
-    fn is_idle(&self) -> bool {
-        matches!(self, PipelineState::Idle(_))
-    }
-}
 
 pub enum SyncControllerMessage {
     ForkchoiceUpdated(ForkchoiceState, oneshot::Sender<PayloadStatusEnum>),
@@ -80,6 +70,7 @@ where
         }
     }
 
+    /// Returns `true` if the pipeline is currently idle.
     fn pipeline_is_idle(&self) -> bool {
         self.pipeline_state.as_ref().expect("pipeline state is set").is_idle()
     }
@@ -104,6 +95,7 @@ where
         }
     }
 
+    /// Handle new payload message.
     fn on_new_payload(&mut self, block: SealedBlock) -> PayloadStatusEnum {
         if self.pipeline_is_idle() {
             match self.blockchain_tree.insert_block(block) {
@@ -145,6 +137,8 @@ where
         Ok(())
     }
 
+    /// Returns the next pipeline state depending on the current value of the next action.
+    /// Resets the next action to the default value.
     fn next_pipeline_state(
         &mut self,
         pipeline: Pipeline<DB, U>,
@@ -179,6 +173,7 @@ where
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
 
+        // Process all incoming messages first.
         while let Poll::Ready(Some(msg)) = this.message_rx.poll_next_unpin(cx) {
             match msg {
                 SyncControllerMessage::ForkchoiceUpdated(state, tx) => {
@@ -192,6 +187,7 @@ where
             }
         }
 
+        // Set the next pipeline state.
         match this.set_next_pipeline_state(cx) {
             Ok(()) => Poll::Pending,
             error @ Err(_) => Poll::Ready(error),
