@@ -75,10 +75,13 @@ where
         self.pipeline_state.as_ref().expect("pipeline state is set").is_idle()
     }
 
+    /// Set next action to [SyncControllerAction::RunPipeline] to indicate that
+    /// controller needs to run the pipeline as soon as it becomes available.
     fn pipeline_run_needed(&mut self) {
         self.next_action = SyncControllerAction::RunPipeline;
     }
 
+    /// Handle the forkchoice updated message.
     fn on_forkchoice_updated(&mut self, state: ForkchoiceState) -> PayloadStatusEnum {
         self.forkchoice_state = Some(state.clone());
         if self.pipeline_is_idle() {
@@ -156,7 +159,7 @@ where
     }
 
     /// Attempt to restore the tree with the finalized block number.
-    /// If the finalized hash is missing from the database, trigger the pipeline run.
+    /// If the finalized block is missing from the database, trigger the pipeline run.
     fn restore_tree_if_possible(
         &mut self,
         finalized_hash: BlockHash,
