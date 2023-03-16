@@ -583,8 +583,8 @@ mod tests {
             _block: &reth_primitives::Block,
             _total_difficulty: reth_primitives::U256,
             _senders: Option<Vec<reth_primitives::Address>>,
-        ) -> Result<ExecutionResult, ExecError> {
-            self.0.clone().ok_or(ExecError::VerificationFailed)
+        ) -> Result<ExecutionResult, ExecutionError> {
+            self.0.clone().ok_or(ExecutionError::VerificationFailed)
         }
 
         fn execute_and_verify_receipt(
@@ -592,8 +592,8 @@ mod tests {
             _block: &reth_primitives::Block,
             _total_difficulty: reth_primitives::U256,
             _senders: Option<Vec<reth_primitives::Address>>,
-        ) -> Result<ExecutionResult, ExecError> {
-            self.0.clone().ok_or(ExecError::VerificationFailed)
+        ) -> Result<ExecutionResult, ExecutionError> {
+            self.0.clone().ok_or(ExecutionError::VerificationFailed)
         }
     }
 

@@ -216,13 +216,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reth_db::mdbx::{test_utils::create_test_rw_db, Env, EnvKind, WriteMap};
+    use reth_db::mdbx::{test_utils::create_test_rw_db, Env, WriteMap};
     use reth_executor::{
         blockchain_tree::{config::BlockchainTreeConfig, externals::TreeExternals},
         test_utils::TestExecutorFactory,
     };
     use reth_interfaces::{
-        p2p::headers::downloader::HeaderDownloader,
         sync::NoopSyncStateUpdate,
         test_utils::{TestConsensus, TestHeaderDownloader},
     };
