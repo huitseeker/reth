@@ -199,7 +199,10 @@ where
 mod tests {
     use super::*;
     use reth_db::mdbx::{test_utils::create_test_rw_db, Env, EnvKind, WriteMap};
-    use reth_executor::test_utils::TestExecutorFactory;
+    use reth_executor::{
+        blockchain_tree::{config::BlockchainTreeConfig, externals::TreeExternals},
+        test_utils::TestExecutorFactory,
+    };
     use reth_interfaces::{
         p2p::headers::downloader::HeaderDownloader,
         sync::NoopSyncStateUpdate,
@@ -233,9 +236,9 @@ mod tests {
             Pipeline::builder().add_stages(TestStages::default()).with_tip_sender(tip_tx).build();
 
         // Setup blockchain tree
-        let tree =
-            BlockchainTree::new(db.clone(), consensus, executor_factory, chain_spec, 1, 2, 3)
-                .expect("failed to create tree");
+        let externals = TreeExternals::new(db.clone(), consensus, executor_factory, chain_spec);
+        let config = BlockchainTreeConfig::new(1, 2, 3);
+        let tree = BlockchainTree::new(externals, config).expect("failed to create tree");
 
         let (sync_tx, sync_rx) = unbounded_channel();
         (sync_tx, SyncController::new(db, pipeline, tree, sync_rx))
