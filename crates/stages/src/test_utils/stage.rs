@@ -15,6 +15,19 @@ impl TestStage {
         Self { id, exec_outputs: VecDeque::new(), unwind_outputs: VecDeque::new() }
     }
 
+    pub fn with_exec(mut self, exec_outputs: VecDeque<Result<ExecOutput, StageError>>) -> Self {
+        self.exec_outputs = exec_outputs;
+        self
+    }
+
+    pub fn with_unwind(
+        mut self,
+        unwind_outputs: VecDeque<Result<UnwindOutput, StageError>>,
+    ) -> Self {
+        self.unwind_outputs = unwind_outputs;
+        self
+    }
+
     pub fn add_exec(mut self, output: Result<ExecOutput, StageError>) -> Self {
         self.exec_outputs.push_back(output);
         self

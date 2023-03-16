@@ -25,7 +25,10 @@ futures = "0.3"
 tracing = "0.1"
 
 [dev-dependencies]
+# reth
 reth-interfaces = { path = "../interfaces", features = ["test-utils"] }
 reth-stages = { path = "../stages", features = ["test-utils"] }
 reth-executor = { path = "../executor", features = ["test-utils"] }
 reth-db = { path = "../storage/db", features = ["test-utils"] }
+
+assert_matches = "1.5"

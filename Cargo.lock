@@ -5321,6 +5321,7 @@ dependencies = [
 name = "reth-sync-controller"
 version = "0.1.0"
 dependencies = [
+ "assert_matches",
  "futures",
  "reth-db",
  "reth-executor",

@@ -90,7 +90,7 @@ pub struct Pipeline<DB: Database, U: SyncStateUpdater> {
 
 /// TODO:
 pub type PipelineFut<DB, U> =
-    Pin<Box<dyn Future<Output = (Pipeline<DB, U>, Result<ControlFlow, PipelineError>)>>>;
+    Pin<Box<dyn Future<Output = (Pipeline<DB, U>, Result<ControlFlow, PipelineError>)> + Send>>;
 
 impl<DB: Database, U: SyncStateUpdater> Default for Pipeline<DB, U> {
     fn default() -> Self {

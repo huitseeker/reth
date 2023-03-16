@@ -19,12 +19,13 @@ use tokio::sync::{mpsc::UnboundedReceiver, oneshot};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::*;
 
+#[derive(Debug)]
 pub enum SyncControllerMessage {
     ForkchoiceUpdated(ForkchoiceState, oneshot::Sender<PayloadStatusEnum>),
     NewPayload(SealedBlock, oneshot::Sender<PayloadStatusEnum>),
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub enum SyncControllerAction {
     #[default]
     None,
@@ -111,37 +112,6 @@ where
         }
     }
 
-    fn set_next_pipeline_state(&mut self, cx: &mut Context<'_>) -> Result<(), PipelineError> {
-        // Lookup the forkchoice state. We can't launch the pipeline without the tip.
-        let forckchoice_state = match &self.forkchoice_state {
-            Some(state) => state,
-            None => return Ok(()),
-        };
-
-        let tip = forckchoice_state.head_block_hash;
-        let next_state = match self.pipeline_state.take().expect("pipeline state is set") {
-            PipelineState::Running(mut fut) => {
-                match fut.poll_unpin(cx) {
-                    Poll::Ready((pipeline, result)) => {
-                        // Any pipeline error at this point is fatal.
-                        result?;
-
-                        // Update the state and hashes of the blockchain tree if possible
-                        self.restore_tree_if_possible(forckchoice_state.finalized_block_hash)
-                            .map_err(|err| PipelineError::Internal(Box::new(err)))?; // TODO:
-
-                        // Get next pipeline state.
-                        self.next_pipeline_state(pipeline, tip)
-                    }
-                    Poll::Pending => PipelineState::Running(fut),
-                }
-            }
-            PipelineState::Idle(pipeline) => self.next_pipeline_state(pipeline, tip),
-        };
-        self.pipeline_state = Some(next_state);
-        Ok(())
-    }
-
     /// Returns the next pipeline state depending on the current value of the next action.
     /// Resets the next action to the default value.
     fn next_pipeline_state(
@@ -206,9 +176,42 @@ where
         }
 
         // Set the next pipeline state.
-        match this.set_next_pipeline_state(cx) {
-            Ok(()) => Poll::Pending,
-            error @ Err(_) => Poll::Ready(error),
+        loop {
+            // Lookup the forkchoice state. We can't launch the pipeline without the tip.
+            let forckchoice_state = match &this.forkchoice_state {
+                Some(state) => state,
+                None => return Poll::Pending,
+            };
+
+            let tip = forckchoice_state.head_block_hash;
+            let next_state = match this.pipeline_state.take().expect("pipeline state is set") {
+                PipelineState::Running(mut fut) => {
+                    match fut.poll_unpin(cx) {
+                        Poll::Ready((pipeline, result)) => {
+                            // Any pipeline error at this point is fatal.
+                            if let Err(error) = result {
+                                return Poll::Ready(Err(error))
+                            }
+
+                            // Update the state and hashes of the blockchain tree if possible
+                            if let Err(error) = this
+                                .restore_tree_if_possible(forckchoice_state.finalized_block_hash)
+                            {
+                                return Poll::Ready(Err(PipelineError::Internal(Box::new(error))))
+                            }
+
+                            // Get next pipeline state.
+                            this.next_pipeline_state(pipeline, tip)
+                        }
+                        Poll::Pending => {
+                            this.pipeline_state = Some(PipelineState::Running(fut));
+                            return Poll::Pending
+                        }
+                    }
+                }
+                PipelineState::Idle(pipeline) => this.next_pipeline_state(pipeline, tip),
+            };
+            this.pipeline_state = Some(next_state);
         }
     }
 }
@@ -216,25 +219,60 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use assert_matches::assert_matches;
     use reth_db::mdbx::{test_utils::create_test_rw_db, Env, WriteMap};
     use reth_executor::{
         blockchain_tree::{config::BlockchainTreeConfig, externals::TreeExternals},
         test_utils::TestExecutorFactory,
     };
-    use reth_interfaces::{
-        sync::NoopSyncStateUpdate,
-        test_utils::{TestConsensus, TestHeaderDownloader},
-    };
+    use reth_interfaces::{sync::NoopSyncStateUpdate, test_utils::TestConsensus};
     use reth_primitives::{ChainSpecBuilder, H256, MAINNET};
-    use reth_stages::{sets::OnlineStages, test_utils::TestStages};
+    use reth_stages::{test_utils::TestStages, ExecOutput, StageError};
+    use std::{collections::VecDeque, time::Duration};
     use tokio::sync::{
         mpsc::{unbounded_channel, UnboundedSender},
+        oneshot::error::TryRecvError,
         watch,
     };
 
-    fn setup_controller() -> (
-        UnboundedSender<SyncControllerMessage>,
+    struct TestEnv {
+        tip_rx: watch::Receiver<H256>,
+        sync_tx: UnboundedSender<SyncControllerMessage>,
+    }
+
+    impl TestEnv {
+        fn new(
+            tip_rx: watch::Receiver<H256>,
+            sync_tx: UnboundedSender<SyncControllerMessage>,
+        ) -> Self {
+            Self { tip_rx, sync_tx }
+        }
+
+        fn send_new_payload(&self, block: SealedBlock) -> oneshot::Receiver<PayloadStatusEnum> {
+            let (tx, rx) = oneshot::channel();
+            self.sync_tx
+                .send(SyncControllerMessage::NewPayload(block, tx))
+                .expect("failed to send msg");
+            rx
+        }
+
+        fn send_forkchoice_updated(
+            &self,
+            state: ForkchoiceState,
+        ) -> oneshot::Receiver<PayloadStatusEnum> {
+            let (tx, rx) = oneshot::channel();
+            self.sync_tx
+                .send(SyncControllerMessage::ForkchoiceUpdated(state, tx))
+                .expect("failed to send msg");
+            rx
+        }
+    }
+
+    fn setup_controller(
+        exec_outputs: VecDeque<Result<ExecOutput, StageError>>,
+    ) -> (
         SyncController<Env<WriteMap>, NoopSyncStateUpdate, TestConsensus, TestExecutorFactory>,
+        TestEnv,
     ) {
         let db = create_test_rw_db();
         let consensus = TestConsensus::default();
@@ -248,9 +286,11 @@ mod tests {
         let executor_factory = TestExecutorFactory::new(chain_spec.clone());
 
         // Setup pipeline
-        let (tip_tx, _tip_rx) = watch::channel(H256::default());
-        let pipeline =
-            Pipeline::builder().add_stages(TestStages::default()).with_tip_sender(tip_tx).build();
+        let (tip_tx, tip_rx) = watch::channel(H256::default());
+        let pipeline = Pipeline::builder()
+            .add_stages(TestStages::new(exec_outputs, Default::default()))
+            .with_tip_sender(tip_tx)
+            .build();
 
         // Setup blockchain tree
         let externals = TreeExternals::new(db.clone(), consensus, executor_factory, chain_spec);
@@ -258,12 +298,39 @@ mod tests {
         let tree = BlockchainTree::new(externals, config).expect("failed to create tree");
 
         let (sync_tx, sync_rx) = unbounded_channel();
-        (sync_tx, SyncController::new(db, pipeline, tree, sync_rx))
+        (SyncController::new(db, pipeline, tree, sync_rx), TestEnv::new(tip_rx, sync_tx))
     }
 
     #[tokio::test]
-    async fn pipeline_to_live_sync() {
-        let (msg_tx, controller) = setup_controller();
-        // TODO:
+    async fn is_idle_until_forkchoice_is_set() {
+        let (controller, env) = setup_controller(VecDeque::from([Err(StageError::ChannelClosed)]));
+
+        let (tx, mut rx) = oneshot::channel();
+        tokio::spawn(async move {
+            let result = controller.await;
+            tx.send(result).expect("failed to forward controller result");
+        });
+
+        std::thread::sleep(Duration::from_millis(100));
+        assert_matches!(rx.try_recv(), Err(TryRecvError::Empty));
+
+        let fcu_rx = env.send_forkchoice_updated(ForkchoiceState::default());
+        assert_matches!(fcu_rx.await, Ok(PayloadStatusEnum::Syncing));
+
+        assert_matches!(rx.await, Ok(Err(PipelineError::Stage(StageError::ChannelClosed))));
+    }
+
+    #[tokio::test]
+    async fn pipeline_error_is_propagated() {
+        let (controller, env) = setup_controller(VecDeque::from([Err(StageError::ChannelClosed)]));
+
+        let (tx, rx) = oneshot::channel();
+        tokio::spawn(async move {
+            let result = controller.await;
+            tx.send(result).expect("failed to forward controller result");
+        });
+
+        let _ = env.send_forkchoice_updated(ForkchoiceState::default());
+        assert_matches!(rx.await, Ok(Err(PipelineError::Stage(StageError::ChannelClosed))));
     }
 }
