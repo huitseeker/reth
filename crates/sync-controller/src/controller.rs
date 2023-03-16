@@ -1,12 +1,12 @@
 use crate::pipeline_state::PipelineState;
 use futures::{Future, FutureExt, StreamExt};
-use reth_db::database::Database;
+use reth_db::{database::Database, tables, transaction::DbTx};
 use reth_executor::blockchain_tree::BlockchainTree;
 use reth_interfaces::{
     consensus::{Consensus, ForkchoiceState},
     sync::SyncStateUpdater,
 };
-use reth_primitives::{SealedBlock, H256};
+use reth_primitives::{BlockHash, SealedBlock, H256};
 use reth_provider::ExecutorFactory;
 use reth_rpc_types::engine::PayloadStatusEnum;
 use reth_stages::{Pipeline, PipelineError};
@@ -100,10 +100,7 @@ where
         if self.pipeline_is_idle() {
             match self.blockchain_tree.insert_block(block) {
                 Ok(true) => PayloadStatusEnum::Valid,
-                Ok(false) => {
-                    self.pipeline_run_needed();
-                    PayloadStatusEnum::Syncing
-                }
+                Ok(false) => PayloadStatusEnum::Syncing,
                 Err(error) => PayloadStatusEnum::Invalid { validation_error: error.to_string() },
             }
         } else {
@@ -125,6 +122,11 @@ where
                     Poll::Ready((pipeline, result)) => {
                         // Any pipeline error at this point is fatal.
                         result?;
+
+                        // Update the state and hashes of the blockchain tree if possible
+                        self.restore_tree_if_possible(forckchoice_state.finalized_block_hash)
+                            .map_err(|err| PipelineError::Internal(Box::new(err)))?; // TODO:
+
                         // Get next pipeline state.
                         self.next_pipeline_state(pipeline, tip)
                     }
@@ -151,6 +153,19 @@ where
         } else {
             PipelineState::Idle(pipeline)
         }
+    }
+
+    /// Attempt to restore the tree with the finalized block number.
+    /// If the finalized hash is missing from the database, trigger the pipeline run.
+    fn restore_tree_if_possible(
+        &mut self,
+        finalized_hash: BlockHash,
+    ) -> Result<(), reth_interfaces::Error> {
+        match self.db.view(|tx| tx.get::<tables::HeaderNumbers>(finalized_hash))?? {
+            Some(number) => self.blockchain_tree.restore_canonical_hashes(number)?,
+            None => self.pipeline_run_needed(),
+        };
+        Ok(())
     }
 }
 
@@ -231,7 +246,7 @@ mod tests {
         let executor_factory = TestExecutorFactory::new(chain_spec.clone());
 
         // Setup pipeline
-        let (tip_tx, tip_rx) = watch::channel(H256::default());
+        let (tip_tx, _tip_rx) = watch::channel(H256::default());
         let pipeline =
             Pipeline::builder().add_stages(TestStages::default()).with_tip_sender(tip_tx).build();
 
